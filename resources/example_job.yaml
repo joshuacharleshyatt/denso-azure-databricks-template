@@ -1,0 +1,33 @@
+resources:
+  jobs:
+    example_daily_job:
+      name: "Example Daily Job"
+      description: "Performs daily transformation on DENSO telemetry data."
+
+      schedule:
+        quartz_cron_expression: "0 0 2 * * ?"  # Runs daily at 2:00 AM UTC
+        timezone_id: "UTC"
+        pause_status: "PAUSED"
+
+      tasks:
+        - task_key: "run_etl_notebook"
+          description: "Extract and transform telemetry data."
+          notebook_task:
+            notebook_path: notebooks/etl_process
+            base_parameters:
+              input_path: "/mnt/datalake/raw/"
+              output_table: "analytics.daily_summary"
+          job_cluster_key: "etl_cluster"
+          timeout_seconds: 3600
+          max_retries: 2
+
+      job_clusters:
+        - job_cluster_key: "etl_cluster"
+          new_cluster:
+            spark_version: 13.3.x-scala2.12
+            node_type_id: Standard_DS3_v2
+            autoscale:
+              min_workers: 1
+              max_workers: 4
+            custom_tags:
+              team: analytics
