@@ -1,0 +1,6 @@
+# This is generally only used for the CI/CD pipeline. Specify the libraries in on a task or job compute level. 
+pytest
+pylint
+nutter
+databricks-cli 
+databricks-sdk

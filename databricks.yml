@@ -1,0 +1,104 @@
+# The name of the bundle. run `databricks bundle schema` to see the full bundle settings schema.
+bundle:
+  name: kcf_ttf
+    
+include:
+  # Resources folder contains ML artifact resources for the ML project that defines model and experiment
+  # And workflows resources for the ML project including model training -> validation -> deployment,
+  # feature engineering,  batch inference, quality monitoring, metric refresh, alerts and triggering retraining
+  #- ./resources/batch-inference-workflow-resource.yml
+  #- ./resources/ml-artifacts-resource.yml
+  #- ./resources/model-workflow-resource.yml
+  #- ./resources/feature-engineering-workflow-resource.yml
+  # TODO: uncomment once monitoring inference table has been created
+  # - ./resources/monitoring-resource.yml
+  # include all config related files
+  - ./conf/*.yml
+  - ./resources/*.yml
+sync:
+  exclude:
+    - azure-*
+    - docs
+    - data
+    - public
+    - .gitignore
+    - .gitlab-ci.yml
+    - ./src/models/.gitkeep
+
+permissions:
+  - group_name: plt_engineer
+    level: CAN_MANAGE
+  - service_principal_name: 7bf7d1ce-d25d-47ad-a416-5243ebb76ac5
+    level: CAN_MANAGE
+
+variables:
+  environment:
+    description: The ID of an existing cluster.
+    default: 1234-567890-abcde123
+  compute_policy_id:
+    description: "Policy for compute clusters"
+  min_workers:
+    description: "Minimum autoscale workers"
+  max_workers:
+    description: "Maximum autoscale workers"    
+  test_cluster_id:
+    description: "The test cluster to use, or in rare cases a predefined run cluster"
+
+# Deployment Target specific values for workspace
+targets:
+  dev:  # UC Catalog Name 
+    mode: production
+    presets:
+      name_prefix: 'testing_' # prefix all resource names with testing_
+      pipelines_development: true # set development to true for pipelines
+      trigger_pause_status: PAUSED # set pause_status to PAUSED for all triggers and schedules
+    variables:
+      environment: dev
+      compute_policy_id: 0013D3F66A5ADDBB
+      min_workers: 1
+      max_workers: 4
+      test_cluster_id: 0625-185951-rxnjrfmw
+    default: true
+    workspace:
+      root_path: /Workspace/application/${bundle.name}
+      file_path: ${workspace.root_path}
+      artifact_path: /Shared/state_artifacts/${bundle.name}/artifacts
+      state_path: /Shared/state_artifacts/${bundle.name}/state
+
+  staging:
+    mode: production
+    presets:
+      name_prefix: 'staging_' # prefix all resource names with staging
+    bundle:
+      git:
+        branch: main
+    variables:
+      environment: stage
+      compute_policy_id: 00107A47AFA930F1
+      min_workers: 1
+      max_workers: 8
+      test_cluster_id: 0626-193347-3kqjpw2e
+    workspace:
+      root_path: /Workspace/application/${bundle.name}
+      file_path: ${workspace.root_path}
+      artifact_path: /Shared/state_artifacts/${bundle.name}/artifacts
+      state_path: /Shared/state_artifacts/${bundle.name}/state
+
+  prod:
+    mode: production
+    presets:
+      name_prefix: 'prod_' # prefix all resource names with prod
+    bundle:
+      git:
+        branch: main
+    variables:
+      environment: prod
+      compute_policy_id: 0012896A679AEA0D
+      min_workers: 2
+      max_workers: 20
+      test_cluster_id: None
+    workspace:
+      root_path: /Workspace/application/${bundle.name}
+      file_path: ${workspace.root_path}
+      artifact_path: /Shared/state_artifacts/${bundle.name}/artifacts
+      state_path: /Shared/state_artifacts/${bundle.name}/state

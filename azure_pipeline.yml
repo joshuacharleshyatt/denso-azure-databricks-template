@@ -1,0 +1,210 @@
+trigger:
+  branches:
+    include:
+      - main
+      - release/*
+
+name: ttf_kcf
+
+variables:
+  - group: databricks_envs
+
+stages:
+  - stage: Validate
+    displayName: "Validate Bundle"
+    jobs:
+      - job: ValidateJob
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.10'
+          - script: |
+              pip install databricks-cli databricks-sdk
+              pip install -r requirements.txt
+            displayName: "Install dependencies"
+          - script: |
+              echo "Install Databricks CLI"
+              curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+              export PATH=$PATH:$HOME/.databricks/bin
+              databricks --version
+            displayName: "Install Databricks CLI"
+          - script: |
+              export ARM_TENANT_ID=$(DATABRICKS_TENANT_ID)
+              export ARM_CLIENT_ID=$(DATABRICKS_CLIENT_ID)
+              export ARM_CLIENT_SECRET=$(DATABRICKS_CLIENT_SECRET)
+              export DATABRICKS_HOST=$(DATABRICKS_HOST_DEV)
+              databricks bundle validate
+            displayName: "Validate DAB config with SP"            
+
+  - stage: DeployDev
+    displayName: "Deploy to Dev"
+    dependsOn: Validate
+    condition: succeeded()
+    jobs:
+      - deployment: DeployDevBundle
+        displayName: "Deploy Bundle (dev)"
+        environment: dev
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - script: |
+                    echo "Current dir: $(pwd)"
+                    echo "Contents:"
+                    ls -R
+                  displayName: "check directory for databricks.yml"
+                - script: |
+                    curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+                    export ARM_TENANT_ID=$(DATABRICKS_TENANT_ID)
+                    export ARM_CLIENT_ID=$(DATABRICKS_CLIENT_ID)
+                    export ARM_CLIENT_SECRET=$(DATABRICKS_CLIENT_SECRET)
+                    export DATABRICKS_HOST=$(DATABRICKS_HOST_DEV)
+                    export PATH=$PATH:$HOME/.databricks/bin
+                    databricks bundle deploy --target dev
+                  displayName: "Deploy using DAB to Dev"
+
+  - stage: TestDev
+    displayName: "Test in Dev"
+    dependsOn: DeployDev
+    condition: succeeded()
+    jobs:
+      - job: RunTests
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+          - script: |
+              pip install --upgrade pip setuptools wheel
+              pip install -r requirements.txt  # Ensure dependencies are installed
+              pip install --upgrade databricks-cli
+              curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | bash              
+            displayName: 'Install dependencies'
+          - script: |
+              pylint $(git ls-files '*.py') --fail-under=4  # Adjust score threshold if needed
+            displayName: 'linting check'
+          - script: |
+              export ARM_TENANT_ID=$(DATABRICKS_TENANT_ID)
+              export ARM_CLIENT_ID=$(DATABRICKS_CLIENT_ID)
+              export ARM_CLIENT_SECRET=$(DATABRICKS_CLIENT_SECRET)
+              export DATABRICKS_HOST=$(DATABRICKS_HOST_DEV)
+
+              export DATABRICKS_TOKEN=$(databricks tokens create --lifetime-seconds 3600 --comment "1-hour token" | jq -r '.token_value')
+
+              export PATH=$PATH:$HOME/.databricks/bin
+              apt install yq -y
+              export CLUSTER_ID=$(yq '.targets.dev.variables.test_cluster_id' databricks.yml)
+              export NAME=$(yq '.bundle.name' databricks.yml)  
+              nutter run /Workspace/application/$NAME/tests/ --cluster-id $CLUSTER_ID --recursive --junit_report --timeout 1800
+            displayName: "Run Dev Unit Tests"
+      - job: wait_for_signoff
+        dependsOn: RunTests
+        displayName: Request to Release to Staging
+        pool: server     #  agent-less
+        steps:
+        - task: ManualValidation@0
+          timeoutInMinutes: 240        # auto-expire after 4 hrs
+          inputs:
+            #notifyUsers: |
+             # user@contoso.com
+              #devops-team@contoso.com
+            instructions: |
+              Validate the release in test environment.
+              Click **Resume** to continue to deploy to PreProd.
+            onTimeout: reject
+
+  - stage: DeployStaging
+    displayName: "Deploy to Staging"
+    dependsOn: TestDev
+    condition: succeeded()
+    jobs:
+      - deployment: DeployStagingBundle
+        displayName: "Deploy Bundle (staging)"
+        environment: staging
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - script: |
+                    curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+                    export ARM_TENANT_ID=$(DATABRICKS_TENANT_ID)
+                    export ARM_CLIENT_ID=$(DATABRICKS_CLIENT_ID)
+                    export ARM_CLIENT_SECRET=$(DATABRICKS_CLIENT_SECRET)
+                    export DATABRICKS_HOST=$(DATABRICKS_HOST_STAGING)
+                    export PATH=$PATH:$HOME/.databricks/bin
+                    databricks bundle deploy --target staging
+                  displayName: "Deploy using DAB to Staging"
+
+  - stage: TestStaging
+    displayName: "Test in Staging"
+    dependsOn: DeployStaging
+    condition: succeeded()
+    jobs:
+      - job: RunTests
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+          - script: |
+              pip install --upgrade pip setuptools wheel
+              pip install -r requirements.txt  # Ensure dependencies are installed
+              pip install --upgrade databricks-cli
+              curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | bash              
+            displayName: 'Install dependencies'
+          - script: |
+              export ARM_TENANT_ID=$(DATABRICKS_TENANT_ID)
+              export ARM_CLIENT_ID=$(DATABRICKS_CLIENT_ID)
+              export ARM_CLIENT_SECRET=$(DATABRICKS_CLIENT_SECRET)
+              export DATABRICKS_HOST=$(DATABRICKS_HOST_STAGING)
+
+              export DATABRICKS_TOKEN=$(databricks tokens create --lifetime-seconds 3600 --comment "1-hour token" | jq -r '.token_value')
+
+              export PATH=$PATH:$HOME/.databricks/bin
+              apt install yq -y
+              export CLUSTER_ID=$(yq '.targets.staging.variables.test_cluster_id' databricks.yml)
+              export NAME=$(yq '.bundle.name' databricks.yml)  
+              nutter run /Workspace/application/$NAME/tests/ --cluster-id $CLUSTER_ID --recursive --junit_report --timeout 1800
+            displayName: "Run Staging Tests"
+
+  - stage: DeployProd
+    displayName: "Deploy to Production"
+    dependsOn: TestStaging
+    condition: succeeded()
+    jobs:
+      - job: wait_for_signoff
+        displayName: Request to go live in Production
+        pool: server     #  agent-less
+        steps:
+        - task: ManualValidation@0
+          timeoutInMinutes: 60        # auto-expire after 1 hr
+          inputs:
+            #notifyUsers: |
+             # user@contoso.com
+              #devops-team@contoso.com
+            instructions: |
+              Your deployment is ready for Production
+              You can deploy during business hours
+              Click **Resume** to deploy to Prod.
+            onTimeout: reject    
+      - deployment: DeployProdBundle
+        dependsOn: wait_for_signoff
+        displayName: "Deploy Bundle (prod)"
+        environment: prod
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - script: |
+                    curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+                    export ARM_TENANT_ID=$(DATABRICKS_TENANT_ID)
+                    export ARM_CLIENT_ID=$(DATABRICKS_CLIENT_ID)
+                    export ARM_CLIENT_SECRET=$(DATABRICKS_CLIENT_SECRET)
+                    export DATABRICKS_HOST=$(DATABRICKS_HOST_PROD)
+                    export PATH=$PATH:$HOME/.databricks/bin
+                    databricks bundle deploy --target prod
+                  displayName: "Deploy using DAB to Prod"
